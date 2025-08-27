@@ -2,6 +2,7 @@ package aws
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"os"
 	"sort"
@@ -29,20 +30,24 @@ func GetPublicIP(ec2Info []*protocols.XID) {
 	defer mc.Disconnect(ctx)
 
 	col := mc.Database(dbName).Collection("aws_info")
-	result := map[string]map[string]struct{}{}
-	if err := collectFromCollection(ctx, col, result); err != nil {
+	setMap := map[string]map[string]struct{}{}
+	if err := collectFromCollection(ctx, col, setMap); err != nil {
 		log.Printf("collect error: %v", err)
 		return
 	}
 
-	for id, set := range result {
+	// convert to map[string][]string
+	m := make(map[string][]string, len(setMap))
+	for id, set := range setMap {
 		ips := make([]string, 0, len(set))
 		for ip := range set {
 			ips = append(ips, ip)
 		}
 		sort.Strings(ips)
-		logx.Infof("instance %s public IPs: %v", id, ips)
+		m[id] = ips
 	}
+	buf, _ := json.Marshal(m)
+	logx.Infof("publicIPs: %s", string(buf))
 
 	log.Printf("GetPublicIP done")
 }
