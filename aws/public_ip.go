@@ -4,12 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"log"
-	"os"
 	"sort"
 	"strings"
 
 	"github.com/colin-404/logx"
-	"github.com/spf13/viper"
 	"github.com/xid-protocol/xidp/protocols"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -29,46 +27,11 @@ func GetPublicIP(ec2Info []*protocols.XID) {
 	}
 	logx.Infof("public IPs summary: instances=%d, ips=%d", len(mapping), totalIPs)
 
-	// optional full output
-	if viper.GetBool("public_ip.print_full") {
-		buf, _ := json.Marshal(mapping)
-		logx.Infof("publicIPs: %s", string(buf))
-	} else {
-		// print first N instances for readability
-		limit := viper.GetInt("public_ip.sample")
-		if limit <= 0 {
-			limit = 20
-		}
-		// stable order by instance id
-		ids := make([]string, 0, len(mapping))
-		for id := range mapping {
-			ids = append(ids, id)
-		}
-		sort.Strings(ids)
-		if len(ids) > limit {
-			ids = ids[:limit]
-		}
-		preview := make(map[string][]string, len(ids))
-		for _, id := range ids {
-			preview[id] = mapping[id]
-		}
-		buf, _ := json.Marshal(preview)
-		logx.Infof("publicIPs preview(%d): %s", limit, string(buf))
-	}
+	// always print full mapping
+	buf, _ := json.Marshal(mapping)
+	logx.Infof("publicIPs: %s", string(buf))
 
 	log.Printf("GetPublicIP done")
-}
-
-func getenvDefault(key, def string) string {
-	v := os.Getenv(key)
-	if v == "" {
-		return def
-	}
-	return v
-}
-
-func safeGetCollection(col *mongo.Collection) *mongo.Collection {
-	return col
 }
 
 func collectFromCollection(ctx context.Context, col *mongo.Collection, result map[string]map[string]struct{}) error {
