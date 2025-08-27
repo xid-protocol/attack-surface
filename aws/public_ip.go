@@ -14,10 +14,12 @@ import (
 )
 
 func GetPublicIP(ec2Info []*protocols.XID) {
+	log.Printf("GetPublicIP start, count=%d", len(ec2Info))
 	logx.Infof("ec2Info: %+v", ec2Info)
 	for _, xid := range ec2Info {
 		logx.Infof("xid: %+v", xid)
 	}
+	log.Printf("GetPublicIP done")
 }
 
 func getenvDefault(key, def string) string {

@@ -71,6 +71,7 @@ func main() {
 	awsCloud := aws.NewAWSCloud()
 	result := awsCloud.GetAllEC2Info()
 	logx.Infof("result: %d", len(result))
+	aws.GetPublicIP(result)
 	// go ServerStart()
 	//go sealsuite.SealsuiteAcountInit()
 	//go accounts.AccountMonitor()
