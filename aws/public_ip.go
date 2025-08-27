@@ -22,6 +22,10 @@ func GetPublicIP(ec2Info []*protocols.XID) {
 	ctx := context.Background()
 	uri := viper.GetString("mongodb.uri")
 	dbName := viper.GetString("mongodb.database")
+	colName := viper.GetString("mongodb.collection")
+	if colName == "" {
+		colName = "aws_info"
+	}
 	mc, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))
 	if err != nil {
 		log.Printf("mongo connect error: %v", err)
@@ -29,25 +33,46 @@ func GetPublicIP(ec2Info []*protocols.XID) {
 	}
 	defer mc.Disconnect(ctx)
 
-	col := mc.Database(dbName).Collection("aws_info")
-	setMap := map[string]map[string]struct{}{}
-	if err := collectFromCollection(ctx, col, setMap); err != nil {
+	col := mc.Database(dbName).Collection(colName)
+	mapping, err := BuildPublicIPMapFromCollection(ctx, col)
+	if err != nil {
 		log.Printf("collect error: %v", err)
 		return
 	}
 
-	// convert to map[string][]string
-	m := make(map[string][]string, len(setMap))
-	for id, set := range setMap {
-		ips := make([]string, 0, len(set))
-		for ip := range set {
-			ips = append(ips, ip)
-		}
-		sort.Strings(ips)
-		m[id] = ips
+	// summary
+	var totalIPs int
+	for _, ips := range mapping {
+		totalIPs += len(ips)
 	}
-	buf, _ := json.Marshal(m)
-	logx.Infof("publicIPs: %s", string(buf))
+	logx.Infof("public IPs summary: instances=%d, ips=%d", len(mapping), totalIPs)
+
+	// optional full output
+	if viper.GetBool("public_ip.print_full") {
+		buf, _ := json.Marshal(mapping)
+		logx.Infof("publicIPs: %s", string(buf))
+	} else {
+		// print first N instances for readability
+		limit := viper.GetInt("public_ip.sample")
+		if limit <= 0 {
+			limit = 20
+		}
+		// stable order by instance id
+		ids := make([]string, 0, len(mapping))
+		for id := range mapping {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		if len(ids) > limit {
+			ids = ids[:limit]
+		}
+		preview := make(map[string][]string, len(ids))
+		for _, id := range ids {
+			preview[id] = mapping[id]
+		}
+		buf, _ := json.Marshal(preview)
+		logx.Infof("publicIPs preview(%d): %s", limit, string(buf))
+	}
 
 	log.Printf("GetPublicIP done")
 }
@@ -121,6 +146,24 @@ func collectFromCollection(ctx context.Context, col *mongo.Collection, result ma
 		}
 	}
 	return cur.Err()
+}
+
+// BuildPublicIPMapFromCollection returns map[instanceID][]uniqueSortedPublicIPs
+func BuildPublicIPMapFromCollection(ctx context.Context, col *mongo.Collection) (map[string][]string, error) {
+	setMap := map[string]map[string]struct{}{}
+	if err := collectFromCollection(ctx, col, setMap); err != nil {
+		return nil, err
+	}
+	out := make(map[string][]string, len(setMap))
+	for id, set := range setMap {
+		ips := make([]string, 0, len(set))
+		for ip := range set {
+			ips = append(ips, ip)
+		}
+		sort.Strings(ips)
+		out[id] = ips
+	}
+	return out, nil
 }
 
 func extractPublicIPs(payload bson.M) []string {
