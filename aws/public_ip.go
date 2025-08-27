@@ -2,6 +2,7 @@ package aws
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"os"
 	"strings"
@@ -40,6 +41,13 @@ func GetPublicIP(ec2Info []*protocols.XID) {
 			}
 			ips = extractPublicIPsFromKV(v)
 			kvCount++
+		case bson.A:
+			arr := []interface{}(v)
+			if instanceID == "" {
+				instanceID = asString(kvFind(arr, "instanceid"))
+			}
+			ips = extractPublicIPsFromKV(arr)
+			kvCount++
 		case map[string]interface{}:
 			if instanceID == "" {
 				instanceID = asString(getAnyCase(v, "instanceid"))
@@ -53,9 +61,75 @@ func GetPublicIP(ec2Info []*protocols.XID) {
 			}
 			ips = extractPublicIPs(v)
 			bsonCount++
-		default:
+		case bson.D:
+			m := dToMap(v)
+			if instanceID == "" {
+				instanceID = asString(getAnyCase(m, "instanceid"))
+			}
+			ips = extractPublicIPs(bson.M(m))
+			bsonCount++
+		case bson.Raw:
+			var m bson.M
+			if err := bson.Unmarshal(v, &m); err == nil {
+				mm := map[string]interface{}(m)
+				if instanceID == "" {
+					instanceID = asString(getAnyCase(mm, "instanceid"))
+				}
+				ips = extractPublicIPs(m)
+				bsonCount++
+				break
+			}
 			otherCount++
 			continue
+		case []byte:
+			var mm map[string]interface{}
+			if err := json.Unmarshal(v, &mm); err == nil {
+				if instanceID == "" {
+					instanceID = asString(getAnyCase(mm, "instanceid"))
+				}
+				ips = extractPublicIPs(bson.M(mm))
+				mapCount++
+				break
+			}
+			otherCount++
+			continue
+		case json.RawMessage:
+			var mm map[string]interface{}
+			if err := json.Unmarshal(v, &mm); err == nil {
+				if instanceID == "" {
+					instanceID = asString(getAnyCase(mm, "instanceid"))
+				}
+				ips = extractPublicIPs(bson.M(mm))
+				mapCount++
+				break
+			}
+			otherCount++
+			continue
+		case string:
+			var mm map[string]interface{}
+			if err := json.Unmarshal([]byte(v), &mm); err == nil {
+				if instanceID == "" {
+					instanceID = asString(getAnyCase(mm, "instanceid"))
+				}
+				ips = extractPublicIPs(bson.M(mm))
+				mapCount++
+				break
+			}
+			otherCount++
+			continue
+		default:
+			// Fallback: try to convert any struct (e.g., *ec2.Instance) to map via JSON/BSON round-trip
+			if m := toBsonMap(record.Payload); m != nil {
+				mm := map[string]interface{}(m)
+				if instanceID == "" {
+					instanceID = asString(getAnyCase(mm, "instanceid"))
+				}
+				ips = extractPublicIPs(m)
+				bsonCount++
+			} else {
+				otherCount++
+				continue
+			}
 		}
 
 		if instanceID == "" || len(ips) == 0 {
@@ -317,10 +391,27 @@ func asString(v interface{}) string {
 	return ""
 }
 
+// toBsonMap attempts to convert arbitrary structs (like ec2.Instance) to bson.M using BSON first,
+// falling back to JSON via the standard library if necessary.
+func toBsonMap(v interface{}) bson.M {
+	if v == nil {
+		return nil
+	}
+	if b, err := bson.Marshal(v); err == nil {
+		var m bson.M
+		if err := bson.Unmarshal(b, &m); err == nil {
+			return m
+		}
+	}
+	return nil
+}
+
 func toMap(v interface{}) (map[string]interface{}, bool) {
 	switch t := v.(type) {
 	case bson.M:
 		return map[string]interface{}(t), true
+	case bson.D:
+		return dToMap(t), true
 	case map[string]interface{}:
 		return t, true
 	default:
@@ -328,10 +419,51 @@ func toMap(v interface{}) (map[string]interface{}, bool) {
 	}
 }
 
+// dToMap converts bson.D (ordered document) to a plain map
+func dToMap(d bson.D) map[string]interface{} {
+	m := make(map[string]interface{}, len(d))
+	for _, e := range d {
+		m[e.Key] = e.Value
+	}
+	return m
+}
+
 func getAnyCase(m map[string]interface{}, key string) interface{} {
 	lower := strings.ToLower(key)
 	for k, v := range m {
 		if strings.ToLower(k) == lower {
+			return v
+		}
+	}
+	// Support AWS Go SDK struct JSON tags like PublicIpAddress / PublicIp
+	// Try common alternates when querying for instanceId/publicIp keys
+	if lower == "instanceid" {
+		if v, ok := m["InstanceId"]; ok {
+			return v
+		}
+	}
+	if lower == "publicipaddress" {
+		if v, ok := m["PublicIpAddress"]; ok {
+			return v
+		}
+	}
+	if lower == "networkinterfaces" {
+		if v, ok := m["NetworkInterfaces"]; ok {
+			return v
+		}
+	}
+	if lower == "association" {
+		if v, ok := m["Association"]; ok {
+			return v
+		}
+	}
+	if lower == "privateipaddresses" {
+		if v, ok := m["PrivateIpAddresses"]; ok {
+			return v
+		}
+	}
+	if lower == "publicip" {
+		if v, ok := m["PublicIp"]; ok {
 			return v
 		}
 	}
