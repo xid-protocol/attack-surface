@@ -114,13 +114,24 @@ func BuildPublicIPMapFromCollection(ctx context.Context, col *mongo.Collection) 
 // BuildPublicIPMapFromXIDs returns instanceID -> []publicIPs from a list of XIDs
 func BuildPublicIPMapFromXIDs(items []*protocols.XID) map[string][]string {
 	setMap := map[string]map[string]struct{}{}
+	skippedNil := 0
+	skippedNoInfo := 0
+	skippedNoID := 0
+	skippedNoPayload := 0
+	processed := 0
+
 	for _, record := range items {
 		if record == nil {
+			skippedNil++
 			continue
 		}
 		instanceID := ""
 		if record.Info != nil && record.Info.ID != "" {
 			instanceID = record.Info.ID
+		} else if record.Info == nil {
+			skippedNoInfo++
+		} else if record.Info.ID == "" {
+			skippedNoID++
 		}
 
 		var payloadMap bson.M
@@ -140,6 +151,7 @@ func BuildPublicIPMapFromXIDs(items []*protocols.XID) map[string][]string {
 				instanceID = asString(kvFind(v, "instanceid"))
 			}
 			if instanceID != "" {
+				processed++
 				if _, ok := setMap[instanceID]; !ok {
 					setMap[instanceID] = map[string]struct{}{}
 				}
@@ -148,6 +160,8 @@ func BuildPublicIPMapFromXIDs(items []*protocols.XID) map[string][]string {
 						setMap[instanceID][ip] = struct{}{}
 					}
 				}
+			} else {
+				skippedNoID++
 			}
 			continue
 		default:
@@ -155,6 +169,7 @@ func BuildPublicIPMapFromXIDs(items []*protocols.XID) map[string][]string {
 		}
 
 		if payloadMap == nil {
+			skippedNoPayload++
 			continue
 		}
 		if instanceID == "" {
@@ -164,8 +179,10 @@ func BuildPublicIPMapFromXIDs(items []*protocols.XID) map[string][]string {
 		}
 		ips := extractPublicIPs(payloadMap)
 		if instanceID == "" {
+			skippedNoID++
 			continue
 		}
+		processed++
 		if _, ok := setMap[instanceID]; !ok {
 			setMap[instanceID] = map[string]struct{}{}
 		}
@@ -175,6 +192,9 @@ func BuildPublicIPMapFromXIDs(items []*protocols.XID) map[string][]string {
 			}
 		}
 	}
+
+	logx.Infof("processing stats: total=%d, processed=%d, skipped: nil=%d, noInfo=%d, noID=%d, noPayload=%d",
+		len(items), processed, skippedNil, skippedNoInfo, skippedNoID, skippedNoPayload)
 
 	out := make(map[string][]string, len(setMap))
 	for id, set := range setMap {
