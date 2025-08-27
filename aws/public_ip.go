@@ -2,12 +2,13 @@ package aws
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/colin-404/logx"
+	"github.com/spf13/viper"
 	"github.com/xid-protocol/xidp/protocols"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -17,145 +18,30 @@ import (
 func GetPublicIP(ec2Info []*protocols.XID) {
 	log.Printf("GetPublicIP start, count=%d", len(ec2Info))
 
-	instanceToIPs := make(map[string]map[string]struct{})
-	var kvCount, mapCount, bsonCount, otherCount int
+	ctx := context.Background()
+	uri := viper.GetString("mongodb.uri")
+	dbName := viper.GetString("mongodb.database")
+	mc, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))
+	if err != nil {
+		log.Printf("mongo connect error: %v", err)
+		return
+	}
+	defer mc.Disconnect(ctx)
 
-	for _, record := range ec2Info {
-		if record == nil || record.Payload == nil {
-			continue
-		}
-
-		// Prefer instance ID from record.Info if present
-		var instanceID string
-		if record.Info != nil && record.Info.ID != "" {
-			instanceID = record.Info.ID
-		}
-
-		var ips []string
-
-		switch v := record.Payload.(type) {
-		case []interface{}:
-			// Key/Value list representation
-			if instanceID == "" {
-				instanceID = asString(kvFind(v, "instanceid"))
-			}
-			ips = extractPublicIPsFromKV(v)
-			kvCount++
-		case bson.A:
-			arr := []interface{}(v)
-			if instanceID == "" {
-				instanceID = asString(kvFind(arr, "instanceid"))
-			}
-			ips = extractPublicIPsFromKV(arr)
-			kvCount++
-		case map[string]interface{}:
-			if instanceID == "" {
-				instanceID = asString(getAnyCase(v, "instanceid"))
-			}
-			ips = extractPublicIPs(bson.M(v))
-			mapCount++
-		case bson.M:
-			m := map[string]interface{}(v)
-			if instanceID == "" {
-				instanceID = asString(getAnyCase(m, "instanceid"))
-			}
-			ips = extractPublicIPs(v)
-			bsonCount++
-		case bson.D:
-			m := dToMap(v)
-			if instanceID == "" {
-				instanceID = asString(getAnyCase(m, "instanceid"))
-			}
-			ips = extractPublicIPs(bson.M(m))
-			bsonCount++
-		case bson.Raw:
-			var m bson.M
-			if err := bson.Unmarshal(v, &m); err == nil {
-				mm := map[string]interface{}(m)
-				if instanceID == "" {
-					instanceID = asString(getAnyCase(mm, "instanceid"))
-				}
-				ips = extractPublicIPs(m)
-				bsonCount++
-				break
-			}
-			otherCount++
-			continue
-		case []byte:
-			var mm map[string]interface{}
-			if err := json.Unmarshal(v, &mm); err == nil {
-				if instanceID == "" {
-					instanceID = asString(getAnyCase(mm, "instanceid"))
-				}
-				ips = extractPublicIPs(bson.M(mm))
-				mapCount++
-				break
-			}
-			otherCount++
-			continue
-		case json.RawMessage:
-			var mm map[string]interface{}
-			if err := json.Unmarshal(v, &mm); err == nil {
-				if instanceID == "" {
-					instanceID = asString(getAnyCase(mm, "instanceid"))
-				}
-				ips = extractPublicIPs(bson.M(mm))
-				mapCount++
-				break
-			}
-			otherCount++
-			continue
-		case string:
-			var mm map[string]interface{}
-			if err := json.Unmarshal([]byte(v), &mm); err == nil {
-				if instanceID == "" {
-					instanceID = asString(getAnyCase(mm, "instanceid"))
-				}
-				ips = extractPublicIPs(bson.M(mm))
-				mapCount++
-				break
-			}
-			otherCount++
-			continue
-		default:
-			// Fallback: try to convert any struct (e.g., *ec2.Instance) to map via JSON/BSON round-trip
-			if m := toBsonMap(record.Payload); m != nil {
-				mm := map[string]interface{}(m)
-				if instanceID == "" {
-					instanceID = asString(getAnyCase(mm, "instanceid"))
-				}
-				ips = extractPublicIPs(m)
-				bsonCount++
-			} else {
-				otherCount++
-				continue
-			}
-		}
-
-		if instanceID == "" || len(ips) == 0 {
-			continue
-		}
-		if _, ok := instanceToIPs[instanceID]; !ok {
-			instanceToIPs[instanceID] = map[string]struct{}{}
-		}
-		for _, ip := range ips {
-			if ip == "" {
-				continue
-			}
-			instanceToIPs[instanceID][ip] = struct{}{}
-		}
+	col := mc.Database(dbName).Collection("aws_info")
+	result := map[string]map[string]struct{}{}
+	if err := collectFromCollection(ctx, col, result); err != nil {
+		log.Printf("collect error: %v", err)
+		return
 	}
 
-	for id, set := range instanceToIPs {
-		var ips []string
+	for id, set := range result {
+		ips := make([]string, 0, len(set))
 		for ip := range set {
 			ips = append(ips, ip)
 		}
+		sort.Strings(ips)
 		logx.Infof("instance %s public IPs: %v", id, ips)
-	}
-
-	if len(instanceToIPs) == 0 {
-		logx.Infof("no public IPs found. payload types — kv:%d map:%d bson:%d other:%d", kvCount, mapCount, bsonCount, otherCount)
 	}
 
 	log.Printf("GetPublicIP done")
