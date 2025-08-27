@@ -2,11 +2,11 @@ package aws
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"os"
 	"strings"
 
+	"github.com/colin-404/logx"
 	"github.com/xid-protocol/xidp/protocols"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -15,7 +15,7 @@ import (
 
 func GetPublicIP(ec2Info []*protocols.XID) {
 	for _, xid := range ec2Info {
-		fmt.Println(xid)
+		logx.Infof("xid: %+v", xid)
 	}
 }
 
