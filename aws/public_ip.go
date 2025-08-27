@@ -135,7 +135,7 @@ func extractPublicIPs(payload bson.M) []string {
 
 	// network interfaces
 	if v := getAnyCase(payload, "networkinterfaces"); v != nil {
-		if arr, ok := v.([]interface{}); ok {
+		if arr, ok := toSlice(v); ok {
 			for _, item := range arr {
 				m, ok := toMap(item)
 				if !ok {
@@ -153,7 +153,7 @@ func extractPublicIPs(payload bson.M) []string {
 				}
 				// privateipaddresses[].association.publicip
 				if pia := getAnyCase(m, "privateipaddresses"); pia != nil {
-					if parr, ok := pia.([]interface{}); ok {
+					if parr, ok := toSlice(pia); ok {
 						for _, pi := range parr {
 							pm, ok := toMap(pi)
 							if !ok {
@@ -305,6 +305,18 @@ func toMap(v interface{}) (map[string]interface{}, bool) {
 		return dToMap(t), true
 	case map[string]interface{}:
 		return t, true
+	default:
+		return nil, false
+	}
+}
+
+// toSlice coerces possible BSON array representations into a generic []interface{}
+func toSlice(v interface{}) ([]interface{}, bool) {
+	switch t := v.(type) {
+	case []interface{}:
+		return t, true
+	case bson.A:
+		return []interface{}(t), true
 	default:
 		return nil, false
 	}
