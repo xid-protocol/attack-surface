@@ -14,6 +14,7 @@ import (
 )
 
 func GetPublicIP(ec2Info []*protocols.XID) {
+	logx.Infof("ec2Info: %+v", ec2Info)
 	for _, xid := range ec2Info {
 		logx.Infof("xid: %+v", xid)
 	}
