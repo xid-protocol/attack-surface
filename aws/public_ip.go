@@ -139,7 +139,7 @@ func BuildPublicIPMapFromXIDs(items []*protocols.XID) map[string][]string {
 			if instanceID == "" {
 				instanceID = asString(kvFind(v, "instanceid"))
 			}
-			if instanceID != "" && len(ips) > 0 {
+			if instanceID != "" {
 				if _, ok := setMap[instanceID]; !ok {
 					setMap[instanceID] = map[string]struct{}{}
 				}
@@ -163,7 +163,7 @@ func BuildPublicIPMapFromXIDs(items []*protocols.XID) map[string][]string {
 			}
 		}
 		ips := extractPublicIPs(payloadMap)
-		if instanceID == "" || len(ips) == 0 {
+		if instanceID == "" {
 			continue
 		}
 		if _, ok := setMap[instanceID]; !ok {
