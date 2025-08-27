@@ -15,10 +15,55 @@ import (
 
 func GetPublicIP(ec2Info []*protocols.XID) {
 	log.Printf("GetPublicIP start, count=%d", len(ec2Info))
-	logx.Infof("ec2Info: %+v", ec2Info)
-	for _, xid := range ec2Info {
-		logx.Infof("xid: %+v", xid)
+
+	instanceToIPs := make(map[string]map[string]struct{})
+
+	for _, record := range ec2Info {
+		if record == nil || record.Payload == nil {
+			continue
+		}
+
+		var instanceID string
+		var ips []string
+
+		switch v := record.Payload.(type) {
+		case []interface{}:
+			// Key/Value list representation
+			instanceID = asString(kvFind(v, "instanceid"))
+			ips = extractPublicIPsFromKV(v)
+		case map[string]interface{}:
+			instanceID = asString(getAnyCase(v, "instanceid"))
+			ips = extractPublicIPs(bson.M(v))
+		case bson.M:
+			m := map[string]interface{}(v)
+			instanceID = asString(getAnyCase(m, "instanceid"))
+			ips = extractPublicIPs(v)
+		default:
+			continue
+		}
+
+		if instanceID == "" || len(ips) == 0 {
+			continue
+		}
+		if _, ok := instanceToIPs[instanceID]; !ok {
+			instanceToIPs[instanceID] = map[string]struct{}{}
+		}
+		for _, ip := range ips {
+			if ip == "" {
+				continue
+			}
+			instanceToIPs[instanceID][ip] = struct{}{}
+		}
 	}
+
+	for id, set := range instanceToIPs {
+		var ips []string
+		for ip := range set {
+			ips = append(ips, ip)
+		}
+		logx.Infof("instance %s public IPs: %v", id, ips)
+	}
+
 	log.Printf("GetPublicIP done")
 }
 
@@ -151,6 +196,105 @@ func extractPublicIPs(payload bson.M) []string {
 		out = append(out, ip)
 	}
 	return out
+}
+
+// extractPublicIPsFromKV extracts public IPs from a payload stored as a list of {Key,Value} entries.
+func extractPublicIPsFromKV(kvs []interface{}) []string {
+	set := map[string]struct{}{}
+
+	// Top-level publicipaddress
+	if v := kvFind(kvs, "publicipaddress"); v != nil {
+		if s := asString(v); s != "" {
+			set[s] = struct{}{}
+		}
+	}
+
+	// Traverse networkinterfaces[].(association.publicip | privateipaddresses[].association.publicip)
+	if niAny := kvFind(kvs, "networkinterfaces"); niAny != nil {
+		if nis, ok := niAny.([]interface{}); ok {
+			for _, nicAny := range nis {
+				nicKVs, ok := nicAny.([]interface{})
+				if !ok {
+					continue
+				}
+				if assocAny := kvFind(nicKVs, "association"); assocAny != nil {
+					if assocKVs, ok := assocAny.([]interface{}); ok {
+						if p := kvFind(assocKVs, "publicip"); p != nil {
+							if s := asString(p); s != "" {
+								set[s] = struct{}{}
+							}
+						}
+					}
+				}
+				if piasAny := kvFind(nicKVs, "privateipaddresses"); piasAny != nil {
+					if pias, ok := piasAny.([]interface{}); ok {
+						for _, pia := range pias {
+							piKVs, ok := pia.([]interface{})
+							if !ok {
+								continue
+							}
+							if assocAny := kvFind(piKVs, "association"); assocAny != nil {
+								if assocKVs, ok := assocAny.([]interface{}); ok {
+									if p := kvFind(assocKVs, "publicip"); p != nil {
+										if s := asString(p); s != "" {
+											set[s] = struct{}{}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	var out []string
+	for ip := range set {
+		out = append(out, ip)
+	}
+	return out
+}
+
+// kvFind scans a list of {Key,Value} maps for the given key (case-insensitive) and returns the Value.
+func kvFind(list []interface{}, key string) interface{} {
+	lower := strings.ToLower(key)
+	for _, item := range list {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		var k string
+		if v, ok := m["Key"]; ok {
+			if s, ok := v.(string); ok {
+				k = s
+			}
+		} else if v, ok := m["key"]; ok {
+			if s, ok := v.(string); ok {
+				k = s
+			}
+		}
+		if strings.ToLower(k) == lower {
+			if v, ok := m["Value"]; ok {
+				return v
+			}
+			if v, ok := m["value"]; ok {
+				return v
+			}
+			return nil
+		}
+	}
+	return nil
+}
+
+func asString(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
 }
 
 func toMap(v interface{}) (map[string]interface{}, bool) {
