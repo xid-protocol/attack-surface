@@ -19,26 +19,8 @@ import (
 func GetPublicIP(ec2Info []*protocols.XID) {
 	log.Printf("GetPublicIP start, count=%d", len(ec2Info))
 
-	ctx := context.Background()
-	uri := viper.GetString("mongodb.uri")
-	dbName := viper.GetString("mongodb.database")
-	colName := viper.GetString("mongodb.collection")
-	if colName == "" {
-		colName = "aws_info"
-	}
-	mc, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))
-	if err != nil {
-		log.Printf("mongo connect error: %v", err)
-		return
-	}
-	defer mc.Disconnect(ctx)
-
-	col := mc.Database(dbName).Collection(colName)
-	mapping, err := BuildPublicIPMapFromCollection(ctx, col)
-	if err != nil {
-		log.Printf("collect error: %v", err)
-		return
-	}
+	// Build mapping from provided XIDs (avoid re-querying DB here)
+	mapping := BuildPublicIPMapFromXIDs(ec2Info)
 
 	// summary
 	var totalIPs int
@@ -164,6 +146,83 @@ func BuildPublicIPMapFromCollection(ctx context.Context, col *mongo.Collection) 
 		out[id] = ips
 	}
 	return out, nil
+}
+
+// BuildPublicIPMapFromXIDs returns instanceID -> []publicIPs from a list of XIDs
+func BuildPublicIPMapFromXIDs(items []*protocols.XID) map[string][]string {
+	setMap := map[string]map[string]struct{}{}
+	for _, record := range items {
+		if record == nil {
+			continue
+		}
+		instanceID := ""
+		if record.Info != nil && record.Info.ID != "" {
+			instanceID = record.Info.ID
+		}
+
+		var payloadMap bson.M
+		switch v := record.Payload.(type) {
+		case bson.M:
+			payloadMap = v
+		case map[string]interface{}:
+			payloadMap = bson.M(v)
+		case bson.D:
+			payloadMap = bson.M(dToMap(v))
+		case bson.Raw:
+			payloadMap = toBsonMap(v)
+		case []interface{}:
+			// Key/Value list representation
+			ips := extractPublicIPsFromKV(v)
+			if instanceID == "" {
+				instanceID = asString(kvFind(v, "instanceid"))
+			}
+			if instanceID != "" && len(ips) > 0 {
+				if _, ok := setMap[instanceID]; !ok {
+					setMap[instanceID] = map[string]struct{}{}
+				}
+				for _, ip := range ips {
+					if ip != "" {
+						setMap[instanceID][ip] = struct{}{}
+					}
+				}
+			}
+			continue
+		default:
+			payloadMap = toBsonMap(v)
+		}
+
+		if payloadMap == nil {
+			continue
+		}
+		if instanceID == "" {
+			if s, _ := getAnyCase(map[string]interface{}(payloadMap), "instanceid").(string); s != "" {
+				instanceID = s
+			}
+		}
+		ips := extractPublicIPs(payloadMap)
+		if instanceID == "" || len(ips) == 0 {
+			continue
+		}
+		if _, ok := setMap[instanceID]; !ok {
+			setMap[instanceID] = map[string]struct{}{}
+		}
+		for _, ip := range ips {
+			if ip != "" {
+				setMap[instanceID][ip] = struct{}{}
+			}
+		}
+	}
+
+	out := make(map[string][]string, len(setMap))
+	for id, set := range setMap {
+		ips := make([]string, 0, len(set))
+		for ip := range set {
+			ips = append(ips, ip)
+		}
+		sort.Strings(ips)
+		out[id] = ips
+	}
+	return out
 }
 
 func extractPublicIPs(payload bson.M) []string {
@@ -353,6 +412,15 @@ func toMap(v interface{}) (map[string]interface{}, bool) {
 	}
 }
 
+// dToMap converts bson.D (ordered document) to a plain map
+func dToMap(d bson.D) map[string]interface{} {
+	m := make(map[string]interface{}, len(d))
+	for _, e := range d {
+		m[e.Key] = e.Value
+	}
+	return m
+}
+
 // toSlice coerces possible BSON array representations into a generic []interface{}
 func toSlice(v interface{}) ([]interface{}, bool) {
 	switch t := v.(type) {
@@ -363,15 +431,6 @@ func toSlice(v interface{}) ([]interface{}, bool) {
 	default:
 		return nil, false
 	}
-}
-
-// dToMap converts bson.D (ordered document) to a plain map
-func dToMap(d bson.D) map[string]interface{} {
-	m := make(map[string]interface{}, len(d))
-	for _, e := range d {
-		m[e.Key] = e.Value
-	}
-	return m
 }
 
 func getAnyCase(m map[string]interface{}, key string) interface{} {
