@@ -17,28 +17,44 @@ func GetPublicIP(ec2Info []*protocols.XID) {
 	log.Printf("GetPublicIP start, count=%d", len(ec2Info))
 
 	instanceToIPs := make(map[string]map[string]struct{})
+	var kvCount, mapCount, bsonCount, otherCount int
 
 	for _, record := range ec2Info {
 		if record == nil || record.Payload == nil {
 			continue
 		}
 
+		// Prefer instance ID from record.Info if present
 		var instanceID string
+		if record.Info != nil && record.Info.ID != "" {
+			instanceID = record.Info.ID
+		}
+
 		var ips []string
 
 		switch v := record.Payload.(type) {
 		case []interface{}:
 			// Key/Value list representation
-			instanceID = asString(kvFind(v, "instanceid"))
+			if instanceID == "" {
+				instanceID = asString(kvFind(v, "instanceid"))
+			}
 			ips = extractPublicIPsFromKV(v)
+			kvCount++
 		case map[string]interface{}:
-			instanceID = asString(getAnyCase(v, "instanceid"))
+			if instanceID == "" {
+				instanceID = asString(getAnyCase(v, "instanceid"))
+			}
 			ips = extractPublicIPs(bson.M(v))
+			mapCount++
 		case bson.M:
 			m := map[string]interface{}(v)
-			instanceID = asString(getAnyCase(m, "instanceid"))
+			if instanceID == "" {
+				instanceID = asString(getAnyCase(m, "instanceid"))
+			}
 			ips = extractPublicIPs(v)
+			bsonCount++
 		default:
+			otherCount++
 			continue
 		}
 
@@ -62,6 +78,10 @@ func GetPublicIP(ec2Info []*protocols.XID) {
 			ips = append(ips, ip)
 		}
 		logx.Infof("instance %s public IPs: %v", id, ips)
+	}
+
+	if len(instanceToIPs) == 0 {
+		logx.Infof("no public IPs found. payload types — kv:%d map:%d bson:%d other:%d", kvCount, mapCount, bsonCount, otherCount)
 	}
 
 	log.Printf("GetPublicIP done")
